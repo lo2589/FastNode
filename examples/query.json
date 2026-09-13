@@ -1,0 +1,14 @@
+{
+  "predicate": {
+    "op": "and",
+    "args": [
+      {"op":"eq","field":"@type","value":"person"},
+      {"op":"eq","field":"/city","value":"上海"},
+      {"op":"eq","field":"/skills","value":"rust"},
+      {"op":"range","field":"/age","gte":20,"lt":30}
+    ]
+  },
+  "include_data": true,
+  "links": "none",
+  "limit": 100
+}

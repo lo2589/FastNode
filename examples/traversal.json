@@ -1,0 +1,12 @@
+{
+  "predicate": {
+    "op": "traverse",
+    "from": {"op":"eq","field":"/name","value":"小明"},
+    "steps": [
+      {"relation":"contains","direction":"in","filter":{"op":"eq","field":"/year","value":2026}},
+      {"relation":"contains","direction":"in","filter":{"op":"eq","field":"@type","value":"place"}}
+    ]
+  },
+  "include_data": true,
+  "links": "summary"
+}

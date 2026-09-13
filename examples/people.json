@@ -1,0 +1,7 @@
+[
+  {"type":"person","summary":"小明，上海的 Rust 工程师","attrs":{"name":"小明","city":"上海","age":26,"skills":["python","rust"],"jobs":[{"company":"星云科技","title":"工程师"}]}},
+  {"type":"person","summary":"小红，北京的 CUDA 研究员","attrs":{"name":"小红","city":"北京","age":31,"skills":["rust","cuda"],"jobs":[{"company":"算力研究院","title":"研究员"},{"company":"星云科技","title":"顾问"}]}},
+  {"type":"event","summary":"2025 年的 Rust 交流会","attrs":{"name":"Rust 交流会 2025","year":2025}},
+  {"type":"event","summary":"2026 年的 Rust 交流会","attrs":{"name":"Rust 交流会 2026","year":2026}},
+  {"type":"place","summary":"上海的活动会场","attrs":{"name":"上海会场","city":"上海"}}
+]
