@@ -18,3 +18,4 @@ reports/*
 .code_genome_db.json*
 .code_hash_db.json*
 .future/
+.venv/

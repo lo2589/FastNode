@@ -1,6 +1,8 @@
 mod import;
 mod index;
 mod model;
+#[cfg(feature = "python")]
+mod python;
 mod query;
 mod store;
 pub mod types;

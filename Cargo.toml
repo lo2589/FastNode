@@ -5,12 +5,20 @@ edition = "2024"
 description = "Transactional JSON nodes with bitmap predicates and graph traversal"
 license = "MIT"
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+python = ["dep:pyo3", "dep:pythonize"]
+
 [dependencies]
 anyhow = "1"
 roaring = "0.11"
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
+pyo3 = { version = "0.26", features = ["extension-module"], optional = true }
+pythonize = { version = "0.26", optional = true }
 
 [profile.release]
 lto = "thin"

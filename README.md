@@ -400,7 +400,7 @@ $B data/demo.db view brief <id>     # 与内置类型同样使用
 
 ```toml
 [dependencies]
-fastnode = { path = "/Users/a1/Workspace/WORKSPACE/Node" }
+fastnode = { git = "https://github.com/lo2589/FastNode" }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 ```
 
@@ -438,6 +438,32 @@ fn main() -> Result<()> {
 | `Write`（事务内） | `get` `get_with` `neighbors` `create` `replace` `patch` `delete` `link` `unlink` `select` `query` `now` |
 
 `select` 返回 `NodeSet`，也就是 `roaring::RoaringBitmap`，可以继续做交集、并集、差集。
+
+## Python 接入
+
+用 maturin 从源码构建 wheel 并安装：
+
+```bash
+pip install maturin
+maturin build --release                      # 产物在 target/wheels/
+pip install target/wheels/fastnode-*.whl
+```
+
+```python
+import fastnode
+
+db = fastnode.Store("data/demo.db")          # ":memory:" 用内存库
+a = db.create({"type": "person", "summary": "小明", "attrs": {"age": 26}})
+b = db.create({"type": "person", "summary": "小红", "attrs": {"age": 31}})
+db.link(a, "knows", b)
+
+db.query({"predicate": {"op": "range", "field": "/age", "gte": 20},
+          "order_by": {"field": "/age", "direction": "desc"}, "include_data": True})
+db.find("小红")                               # 任意路径含这个值的 id 列表
+db.get(a, links="summary")                    # 带引用读出
+```
+
+方法与核心 API 一一对应：`create` `create_many` `get` `query` `find` `patch` `delete` `link` `unlink` `import` `stats`。参数和返回值都是原生 dict / list，查询协议与命令行相同；进程内直接调 Rust 库，没有子进程开销。
 
 ## 存储
 
