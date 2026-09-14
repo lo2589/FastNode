@@ -26,6 +26,8 @@ pub fn request(command: &str, args: &[String]) -> Result<Value> {
         }
         "query" => json!({"op":"query","query":input(arg(0)?)?}),
         "batch" => json!({"op":"batch","ops":input(arg(0)?)?}),
+        "define-type" => json!({"op":"define_type","def":input(arg(0)?)?}),
+        "typedefs" => json!({"op":"typedefs"}),
         "stats" => json!({"op":"stats"}),
         _ => bail!("unknown command {command}; see --help"),
     })

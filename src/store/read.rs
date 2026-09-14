@@ -1,9 +1,30 @@
+use super::Write;
 use crate::{Direction, LinkMode, LinkOptions, LinkRef, Node, NodeId, NodeLinks};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::OnceLock;
 
 pub(crate) const MAX_LINK_LIMIT: usize = 10_000;
+
+impl Write<'_> {
+    /// A Node with its links, as seen inside this transaction.
+    pub fn get_with(&self, id: NodeId, options: &LinkOptions) -> Result<Option<Node>> {
+        super::check_limit(options)?;
+        load_node(&self.tx, id, Some(options))
+    }
+
+    /// Links of one relation in one direction, as seen inside this transaction.
+    pub fn neighbors(
+        &self,
+        id: NodeId,
+        relation: &str,
+        direction: Direction,
+        options: &LinkOptions,
+    ) -> Result<(Vec<LinkRef>, bool)> {
+        super::check_limit(options)?;
+        link_refs(&self.tx, id, direction, Some(relation), options)
+    }
+}
 
 pub(crate) fn get_node(conn: &Connection, id: NodeId) -> Result<Option<Node>> {
     let row: Option<(u64, String, String, String)> = conn

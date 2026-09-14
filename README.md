@@ -193,6 +193,32 @@ Node
   - 关系里有环也会停下来。
 - `filter` 只筛选最终到达的 Node，不影响途中经过哪些 Node。
 
+## 复合索引与 seek
+
+```rust
+db.define_index("timeline", "state", &["/timeline", "/recorded/end"], "/valid/start")?;
+```
+
+```json
+{"op":"seek","index":"timeline","group":["12#condition",null],"lte":1789228800000,"direction":"desc","limit":1}
+```
+
+- 按 type 声明：分组路径（等值）加一个有序路径。定义时回填已有 Node，之后写入、修改、删除自动维护。
+- 只有每个分组路径恰好一个标量、有序路径恰好一个数字或字符串的 Node 进入索引。
+- `seek` 在一个分组内按有序 key 走 B 树：边界 `gt / gte / lt / lte`（同为数字或同为字符串）、方向、条数。结果可以再和其他条件组合，条数先于组合生效。
+- 单条时间线 100 万个版本，定位 t 时刻的版本 p50 0.011 ms。
+
+## 写入策略、事务与时间戳
+
+| 能力 | 用法 |
+|---|---|
+| 只追加 | `db.set_policy("state", &WritePolicy::append_only(&["/recorded/end"]))`：该 type 禁止 delete / replace，patch 只能改列出的 attrs 路径；违反即报错，所在事务回滚 |
+| 事务内读取 | `Write::query` / `get_with` / `neighbors`，看得到本事务未提交的写入 |
+| 事务时间戳 | `Write::now()`：事务内固定，跨事务严格递增，系统时钟回拨也不倒退 |
+| rpc 事务 | `{"op":"begin"}` → 任意读写 → `{"op":"commit"}` 或 `{"op":"rollback"}`；其中一条失败后只接受 rollback，输入中断即回滚 |
+
+rpc 另有 `define_index`、`define_type`、`typedefs`、`set_policy`、`now`、`neighbors`。
+
 ## 派生类型
 
 派生类型把 attrs 路径和关系提到第一级，让调用方直接读 `node.parent`、`node.next`。存储仍然是 Node 加 links，所有读、查、写都翻译成核心层操作。
@@ -202,6 +228,8 @@ Node
 | [TreeNode](src/types/tree.rs) | `name` `parent` `children` `next` `before` | `/name`；`parent` 关系的出向 / 入向；`next` 关系的出向 / 入向 | `create` `read` `set_next` `descendants` `ancestors` |
 | [EventNode](src/types/event.rs) | `what` `time` `next` `before` | `/what`；`/time` 区间；`next` 关系的出向 / 入向 | `create` `then` `read` `during` `after` |
 | [StateNode](src/types/state.rs) | `key` `value` `valid` `subject` | `/key` `/value`；`/valid` 区间；`state_of` 关系的出向 | `set` `at` `history` |
+| [CodeNode](src/types/code.rs) | `symbol` `file` `line_start` `calls` `called_by` 等 | `/symbol` 等 attrs；`call` / `dataflow` / `impact` 关系的出向 / 入向 | `create` `read` |
+| [RelationshipNode](src/types/code.rs) | `from` `to` `edge_type` `condition` `call_line` 等 | `rel_from` / `rel_to` 关系的出向；边元数据 attrs | `create` `read` |
 
 ```rust
 use fastnode::types::{EventNode, Span, StateNode, TreeNode};
@@ -268,7 +296,42 @@ fn main() -> Result<()> {
 
 - 字段只能取自本 Node 的 attrs 路径，或某种关系走一跳后的邻居。
 - 还不支持：沿关系链取对方的属性（如 `company.city`）、多跳字段、沿关系继承 attrs。
-- 命令行和 rpc 的 `view` 只认识内置的 tree、event、state。
+- 命令行和 rpc 的 `view` 认识内置的 tree、event、state、code、relationship，以及 `define-type` 存进库里的运行时类型。
+
+**code / relationship 用法**：这两个类型是为代码符号库准备的（见 `examples/anchors_to_fastnode.py`，把 codedendrite 的 anchors/relations 一键导入）。每个符号是 `code` 节点，每条调用/数据流边是 `relationship` 节点（边元数据全保留），图遍历仍走纯三元组的 `call` / `dataflow` / `impact` 关系：
+
+```rust
+use fastnode::types::{CodeNode, RelationshipNode};
+use fastnode::{Result, Store};
+
+fn main() -> Result<()> {
+    let mut db = Store::open("data/codedendrite.db")?;
+    let main_fn = CodeNode::read(&mut db, 1209)?.unwrap();
+    println!("{} 调用了 {:?}", main_fn.summary, main_fn.calls.iter().map(|l| &l.summary).collect::<Vec<_>>());
+    let edge = RelationshipNode::read(&mut db, 1392)?.unwrap();   // 一条 call 边
+    println!("{:?} -[{}]-> {:?} @{:?}", edge.from.map(|l| l.id), edge.edge_type, edge.to.map(|l| l.id), edge.call_line);
+    Ok(())
+}
+```
+
+命令行同样可用：
+
+```bash
+$B data/codedendrite.db view code 1209           # main 的 calls / called_by 提升为第一级字段
+$B data/codedendrite.db view relationship 1392   # 边的 from / to / condition / call_line
+```
+
+**运行时定义派生类型**（不用改代码、不用重编译）：`define-type` 把定义存进数据库，`view` 读取时动态解析；重复定义相同内容无副作用，同名不同定义会报错。定义里每个字段取 `attr`（JSON Pointer）或 `link`（关系名，可配 `direction`、`many`）之一：
+
+```bash
+$B data/demo.db define-type '{"kind":"brief","fields":[
+  {"name":"symbol","attr":"/symbol"},
+  {"name":"callees","link":"call","direction":"out","many":true}]}'
+$B data/demo.db typedefs            # 列出所有运行时定义
+$B data/demo.db view brief <id>     # 与内置类型同样使用
+```
+
+运行时定义的类型同样受上面的限制约束；`kind` 必须与节点的 `type` 一致，且不能覆盖内置类型。
 
 ## 命令行
 
@@ -278,12 +341,13 @@ fn main() -> Result<()> {
 |---|---|
 | 新建 / 批量新建 | `create <node>` / `create-many <node-array>` |
 | 读取 | `get <id> [--links none\|summary\|full] [--link-limit N]` |
-| 派生视图 | `view <tree\|event\|state> <id> [--links …]` |
+| 派生视图 | `view <tree\|event\|state\|code\|relationship\|自定义类型> <id> [--links …]` |
 | 按值查找 | `find <value> [--order <field>] [--direction asc\|desc] [--cursor c] [--limit N] [--after N] [--links …]` |
 | 替换 / 修改 / 删除 | `replace <id> <node>` / `patch <id> <merge-patch>` / `delete <id>` |
 | 关系 | `link <from> <relation> <to>` / `unlink …` / `links <id>` |
 | 查询 / 批量写 / 导入 | `query <query>` / `batch <ops>` / `import <file\|-> [batch-size]` |
-| 统计 / 常驻 | `stats` / `rpc` |
+| 派生类型定义 | `define-type <def>` / `typedefs` |
+| 统计 / 常驻 | `stats` / `rpc`（支持 begin / commit / rollback） |
 
 - **find 的参数类型**：`find 26` 查数字，`find '"26"'` 查字符串，`find b` 查字符串 b。
 - **patch**：对 `{type, summary, attrs}` 做 JSON Merge Patch。attrs 里写 null 表示删除这个属性，数组整体替换；type 和 summary 不能删除或置空。
@@ -340,8 +404,8 @@ fn main() -> Result<()> {
 
 | 类型 | 主要方法 |
 |---|---|
-| `Store` | `open` `write` `create` `create_many` `get` `get_with` `neighbors` `replace` `patch` `delete` `link` `unlink` `links` `query` `select` `import` `stats` `checkpoint` |
-| `Write`（事务内） | `get` `create` `replace` `patch` `delete` `link` `unlink` `select` |
+| `Store` | `open` `write` `create` `create_many` `get` `get_with` `neighbors` `replace` `patch` `delete` `link` `unlink` `links` `query` `select` `import` `stats` `checkpoint` `define_index` `set_policy` `policy` |
+| `Write`（事务内） | `get` `get_with` `neighbors` `create` `replace` `patch` `delete` `link` `unlink` `select` `query` `now` |
 
 `select` 返回 `NodeSet`，也就是 `roaring::RoaringBitmap`，可以继续做交集、并集、差集。
 
@@ -355,11 +419,14 @@ numbers          (路径, 精确排序键, id)，另有 (id, 路径, 键) 索引
 intervals        (路径, start, end, id)，另有按 id 查的索引、没有结束时间的区间的部分索引
 interval_fields  每个路径写入过的最长有限区间长度（只增不减）
 links            (source, relation, target) + (target, relation, source)
+index_defs / composites   复合索引定义与条目 (名字, 分组键, 有序键, id)
+policies         按 type 的写入策略
+clock            事务时间戳的最后取值
 ```
 
 - **持久化**：SQLite `WAL + synchronous=FULL`。写入串行，读取可以并发；一次查询及其内容读取在同一个快照内完成。
 - **单一持有者数字**：只写有序行；第二个 Node 取到同一个值时补建位图，持有者减回一个时撤掉。
-- **版本**：当前是 schema v4，旧版本的库会拒绝打开，需要重新导入。
+- **版本**：当前是 schema v5；v4 的库打开时原地升级，更早的版本会拒绝打开，需要重新导入。
 
 ## 性能摘要
 
@@ -375,6 +442,7 @@ links            (source, relation, target) + (target, relation, source)
 | 单条新建 / 修改 / 删除（独立事务） | 0.15–0.23 ms |
 | 导入 100 万 Node（带区间） | 29.6 s |
 | 数据库文件（100 万 Node + 100 万关系 + 100 万区间） | 755 MiB |
+| 单条时间线 100 万个版本中定位 t 时刻的版本（seek） | 0.011 ms |
 
 ## 代码结构
 
@@ -383,9 +451,9 @@ src/model/          Node、链接、谓词、查询参数
 src/index/          JSON → 位图键、数字排序键、区间行、路径规则
 src/store/          schema、读取与引用、写入、索引维护、数字与区间行
 src/query/          谓词求值、等值、范围、区间、图遍历、排序与游标
-src/types/          Schema、Span 与派生类型 tree / event / state
+src/types/          Schema、Span 与派生类型 tree / event / state / code / relationship
 src/bin/fastnode/   命令行与 rpc
-tests/              crud storage attrs sparse order interval graph types scan cli
+tests/              crud storage attrs sparse order interval graph types scan composite policy write_reads cli
 examples/           demo、types、million（百万基准）、jsonl_million.py
 ```
 

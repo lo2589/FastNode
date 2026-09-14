@@ -3,7 +3,7 @@ use crate::{Direction, Link, LinkOptions, Node, NodeId, Predicate, Store, Write}
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 
 /// Where a first-level field reads from.
@@ -90,31 +90,20 @@ impl Schema {
             node.kind,
             self.kind
         );
-        let mut fields = Map::new();
-        for field in self.fields {
-            let value = match field.source {
-                Source::Attr(pointer) => {
-                    node.attrs.pointer(pointer).cloned().unwrap_or(Value::Null)
-                }
-                Source::Link {
-                    relation,
-                    direction,
-                    many,
-                } => {
-                    let limit = if many { options.limit } else { 1 };
-                    let links = LinkOptions {
-                        mode: options.mode,
-                        limit,
-                    };
-                    let (refs, _) = link_refs(conn, id, direction, Some(relation), &links)?;
-                    match many {
-                        true => serde_json::to_value(refs)?,
-                        false => refs.first().map_or(Ok(Value::Null), serde_json::to_value)?,
-                    }
-                }
-            };
-            fields.insert(field.name.into(), value);
-        }
+        let fields = resolve_fields(
+            conn,
+            &node,
+            self.fields.iter().map(|f| {
+                (
+                    f.name,
+                    match f.source {
+                        Source::Attr(p) => Src::Attr(p),
+                        Source::Link { relation, direction, many } => Src::Link { relation, direction, many },
+                    },
+                )
+            }),
+            options,
+        )?;
         Ok(Some(View { node, fields }))
     }
 
@@ -137,6 +126,110 @@ impl Schema {
             relation: relation.into(),
             to,
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Src<'a> {
+    Attr(&'a str),
+    Link { relation: &'a str, direction: Direction, many: bool },
+}
+
+fn resolve_fields<'a>(
+    conn: &Connection,
+    node: &Node,
+    fields: impl Iterator<Item = (&'a str, Src<'a>)>,
+    options: &LinkOptions,
+) -> Result<Map<String, Value>> {
+    let mut out = Map::new();
+    for (name, source) in fields {
+        let value = match source {
+            Src::Attr(pointer) => node.attrs.pointer(pointer).cloned().unwrap_or(Value::Null),
+            Src::Link { relation, direction, many } => {
+                let limit = if many { options.limit } else { 1 };
+                let links = LinkOptions { mode: options.mode, limit };
+                let (refs, _) = link_refs(conn, node.id, direction, Some(relation), &links)?;
+                match many {
+                    true => serde_json::to_value(refs)?,
+                    false => refs.first().map_or(Ok(Value::Null), serde_json::to_value)?,
+                }
+            }
+        };
+        out.insert(name.into(), value);
+    }
+    Ok(out)
+}
+
+/// A runtime-defined derived type, stored in the database by `define_type`.
+/// One field is either an attrs path (`attr`) or a link relation (`link`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeDef {
+    pub kind: String,
+    pub fields: Vec<FieldDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldDef {
+    pub name: String,
+    #[serde(default)]
+    pub attr: Option<String>,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub direction: Direction,
+    #[serde(default)]
+    pub many: bool,
+}
+
+impl TypeDef {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(!self.kind.is_empty(), "type kind is required");
+        let mut names = std::collections::HashSet::new();
+        for f in &self.fields {
+            ensure!(names.insert(&f.name), "duplicate field {}", f.name);
+            match (&f.attr, &f.link) {
+                (Some(p), None) => ensure!(p.starts_with('/'), "attr must be a JSON pointer: {p}"),
+                (None, Some(r)) => ensure!(!r.is_empty(), "link relation must not be empty"),
+                _ => bail!("field {} needs exactly one of attr / link", f.name),
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads Node `id` through this runtime definition.
+    pub fn read(&self, db: &mut Store, id: NodeId, options: &LinkOptions) -> Result<Option<View>> {
+        let tx = db.conn.transaction()?;
+        let view = self.resolve(&tx, id, options)?;
+        tx.commit()?;
+        Ok(view)
+    }
+
+    fn resolve(&self, conn: &Connection, id: NodeId, options: &LinkOptions) -> Result<Option<View>> {
+        let Some(node) = get_node(conn, id)? else {
+            return Ok(None);
+        };
+        ensure!(
+            node.kind == self.kind,
+            "node {id} is a {}, not a {}",
+            node.kind,
+            self.kind
+        );
+        let fields = resolve_fields(
+            conn,
+            &node,
+            self.fields.iter().map(|f| {
+                (
+                    f.name.as_str(),
+                    match (&f.attr, &f.link) {
+                        (Some(p), None) => Src::Attr(p.as_str()),
+                        (None, Some(r)) => Src::Link { relation: r.as_str(), direction: f.direction, many: f.many },
+                        _ => unreachable!("validated at define_type"),
+                    },
+                )
+            }),
+            options,
+        )?;
+        Ok(Some(View { node, fields }))
     }
 }
 

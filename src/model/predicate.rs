@@ -1,4 +1,4 @@
-use super::{Direction, NodeId, Step};
+use super::{Direction, NodeId, SortDirection, Step};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -62,6 +62,24 @@ pub enum Predicate {
         field: String,
         start: Number,
         end: Number,
+    },
+    /// Entries of a declared composite index: one group, in ordering order,
+    /// within optional bounds, nearest first, at most `limit`.
+    Seek {
+        index: String,
+        group: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gte: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lt: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lte: Option<Value>,
+        #[serde(default)]
+        direction: SortDirection,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
     },
     HasLink {
         relation: String,
@@ -163,6 +181,16 @@ fn parse(value: Value) -> anyhow::Result<Predicate> {
             field: take(m, "field")?,
             start: take(m, "start")?,
             end: take(m, "end")?,
+        },
+        "seek" => Predicate::Seek {
+            index: take(m, "index")?,
+            group: take(m, "group")?,
+            gt: optional(m, "gt")?,
+            gte: optional(m, "gte")?,
+            lt: optional(m, "lt")?,
+            lte: optional(m, "lte")?,
+            direction: optional(m, "direction")?.unwrap_or_default(),
+            limit: optional(m, "limit")?,
         },
         "has_link" => Predicate::HasLink {
             relation: take(m, "relation")?,

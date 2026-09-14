@@ -10,6 +10,7 @@ mod order;
 mod order_key;
 mod postings;
 mod range;
+mod seek;
 mod validate;
 
 use crate::store::load_node;
@@ -26,39 +27,9 @@ impl Store {
     pub fn query(&mut self, query: &Query) -> Result<QueryResult> {
         validate::query(query)?;
         let tx = self.conn.transaction()?;
-        let engine = Engine { conn: &tx };
-        let set = engine.eval(&query.predicate, None)?;
-        let (ids, next_after, next_cursor) = match &query.order_by {
-            Some(order) => {
-                let page = engine.order(&set, order, query.cursor.as_deref(), query.limit)?;
-                (page.ids, None, page.next_cursor)
-            }
-            None => id_page(&set, query.after, query.limit),
-        };
-        let nodes = if query.include_data {
-            let links = LinkOptions {
-                mode: query.links,
-                limit: query.link_limit,
-            };
-            Some(
-                ids.iter()
-                    .map(|id| {
-                        load_node(&tx, *id, Some(&links))?
-                            .ok_or_else(|| anyhow::anyhow!("index references missing node {id}"))
-                    })
-                    .collect::<Result<_>>()?,
-            )
-        } else {
-            None
-        };
+        let result = run(&tx, query)?;
         tx.commit()?;
-        Ok(QueryResult {
-            total: set.len(),
-            ids,
-            nodes,
-            next_after,
-            next_cursor,
-        })
+        Ok(result)
     }
 
     pub fn select(&mut self, predicate: &Predicate) -> Result<NodeSet> {
@@ -77,6 +48,48 @@ impl Write<'_> {
         self.flush()?;
         Engine { conn: &self.tx }.eval(predicate, None)
     }
+
+    /// `Store::query` inside this transaction, seeing its uncommitted writes.
+    pub fn query(&mut self, query: &Query) -> Result<QueryResult> {
+        validate::query(query)?;
+        self.flush()?;
+        run(&self.tx, query)
+    }
+}
+
+fn run(conn: &Connection, query: &Query) -> Result<QueryResult> {
+    let engine = Engine { conn };
+    let set = engine.eval(&query.predicate, None)?;
+    let (ids, next_after, next_cursor) = match &query.order_by {
+        Some(order) => {
+            let page = engine.order(&set, order, query.cursor.as_deref(), query.limit)?;
+            (page.ids, None, page.next_cursor)
+        }
+        None => id_page(&set, query.after, query.limit),
+    };
+    let nodes = if query.include_data {
+        let links = LinkOptions {
+            mode: query.links,
+            limit: query.link_limit,
+        };
+        Some(
+            ids.iter()
+                .map(|id| {
+                    load_node(conn, *id, Some(&links))?
+                        .ok_or_else(|| anyhow::anyhow!("index references missing node {id}"))
+                })
+                .collect::<Result<_>>()?,
+        )
+    } else {
+        None
+    };
+    Ok(QueryResult {
+        total: set.len(),
+        ids,
+        nodes,
+        next_after,
+        next_cursor,
+    })
 }
 
 type Page = (Vec<NodeId>, Option<NodeId>, Option<String>);

@@ -70,6 +70,29 @@ pub(super) fn predicate(p: &Predicate, depth: usize) -> Result<()> {
                 "interval start must not exceed end"
             );
         }
+        Predicate::Seek {
+            index: name,
+            group,
+            gt,
+            gte,
+            lt,
+            lte,
+            limit,
+            ..
+        } => {
+            ensure!(!name.is_empty(), "seek requires an index name");
+            ensure!(!group.is_empty(), "seek requires group values");
+            for value in group {
+                index::token(value)?;
+            }
+            ensure!(gt.is_none() || gte.is_none(), "choose gt or gte");
+            ensure!(lt.is_none() || lte.is_none(), "choose lt or lte");
+            range::kind([gt, gte, lt, lte])?;
+            ensure!(
+                limit.is_none_or(|l| l <= 100_000),
+                "seek limit must be <= 100000"
+            );
+        }
         Predicate::And { args } | Predicate::Or { args } => {
             for p in args {
                 predicate(p, depth + 1)?;

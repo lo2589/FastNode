@@ -34,7 +34,7 @@ pub(crate) fn is_wildcard(field: &str) -> bool {
     field.split('/').any(|segment| segment == "*")
 }
 
-pub(super) fn escape(key: &str) -> String {
+pub(crate) fn escape(key: &str) -> String {
     if key == "*" {
         "~2".into()
     } else {

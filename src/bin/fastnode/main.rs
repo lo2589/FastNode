@@ -1,6 +1,7 @@
 mod args;
 mod dispatch;
 mod mutation;
+mod session;
 
 use anyhow::{Result, ensure};
 use fastnode::Store;
@@ -8,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     env,
     fs::File,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, Read},
 };
 
 const HELP: &str = r#"FastNode — transactional JSON nodes + bitmap queries
@@ -32,7 +33,7 @@ Node JSON: {"type":"person","summary":"one sentence","attrs":{...}}
   batch <operations-array|@file|->
   import <file|-> [batch-size=5000]
   stats
-  rpc  (one JSON request/response per line)
+  rpc  (one JSON request/response per line; begin / commit / rollback wrap requests in one transaction)
 
 Query example: {"predicate":{"op":"overlap","field":"/time","start":0,"end":100},"order_by":{"field":"/time/start"},"include_data":true}
 "#;
@@ -62,21 +63,26 @@ fn run() -> Result<()> {
 }
 
 fn rpc(store: &mut Store) -> Result<()> {
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
     let mut stdout = io::stdout().lock();
-    for line in io::stdin().lock().lines() {
+    while let Some(line) = lines.next() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let result = serde_json::from_str(&line)
-            .map_err(anyhow::Error::from)
-            .and_then(|request| dispatch::dispatch(store, request));
-        let output = match result {
-            Ok(result) => json!({"ok":true,"result":result}),
-            Err(error) => json!({"ok":false,"error":format!("{error:#}")}),
-        };
-        writeln!(stdout, "{output}")?;
-        stdout.flush()?;
+        let request: Result<Value> = serde_json::from_str(&line).map_err(Into::into);
+        if let Ok(begin) = &request
+            && begin.get("op").and_then(Value::as_str) == Some("begin")
+        {
+            session::reply(&mut stdout, Ok(json!({"began": true})))?;
+            session::run(store, &mut lines, &mut stdout)?;
+            continue;
+        }
+        session::reply(
+            &mut stdout,
+            request.and_then(|r| dispatch::dispatch(store, r)),
+        )?;
     }
     Ok(())
 }

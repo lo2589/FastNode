@@ -1,9 +1,13 @@
+mod clock;
+pub(crate) mod composite;
 mod maintain;
 mod numbers;
+mod policy;
 mod read;
 mod schema;
 mod write;
 
+pub use policy::WritePolicy;
 pub(crate) use read::{MAX_LINK_LIMIT, get_node, link_refs, load_node};
 pub use write::Write;
 

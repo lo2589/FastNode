@@ -4,7 +4,7 @@ mod path;
 mod value;
 mod visit;
 
-pub(crate) use path::{TYPE_FIELD, field_valid, is_wildcard};
+pub(crate) use path::{TYPE_FIELD, escape, field_valid, is_wildcard};
 pub(crate) use value::{
     INFINITY, hex, number_key, number_token, span_length, token, token_sort_bytes, unhex,
 };

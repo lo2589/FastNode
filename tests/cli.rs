@@ -130,3 +130,93 @@ fn cli_import_find_order_view_and_errors() {
         let _ = std::fs::remove_file(format!("{db}{suffix}"));
     }
 }
+
+fn rpc_session(lines: &[&str]) -> Vec<Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fastnode"))
+        .args([":memory:", "rpc"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for line in lines {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+
+#[test]
+fn rpc_transactions_commit_roll_back_and_refuse_work_after_an_error() {
+    let out = rpc_session(&[
+        r#"{"op":"begin"}"#,
+        r#"{"op":"create","node":{"type":"state","summary":"a","attrs":{"k":1}}}"#,
+        r#"{"op":"query","query":{"predicate":{"op":"eq","field":"/k","value":1},"limit":0}}"#,
+        r#"{"op":"rollback"}"#,
+        r#"{"op":"query","query":{"predicate":{"op":"eq","field":"/k","value":1},"limit":0}}"#,
+        r#"{"op":"begin"}"#,
+        r#"{"op":"create","node":{"type":"state","summary":"b","attrs":{"k":2}}}"#,
+        r#"{"op":"link","from":1,"relation":"self","to":1}"#,
+        r#"{"op":"now"}"#,
+        r#"{"op":"commit"}"#,
+        r#"{"op":"get","id":1,"links":"none"}"#,
+        r#"{"op":"begin"}"#,
+        r#"{"op":"link","from":1,"relation":"bad","to":999}"#,
+        r#"{"op":"create","node":{"type":"state","summary":"c","attrs":{}}}"#,
+        r#"{"op":"commit"}"#,
+        r#"{"op":"rollback"}"#,
+        r#"{"op":"stats"}"#,
+        r#"{"op":"define_index","name":"by_g","type":"state","grouping":["/g"],"ordering":"/k"}"#,
+        r#"{"op":"set_policy","type":"state","policy":{"delete":false,"replace":false,"patch":["/k"]}}"#,
+        r#"{"op":"delete","id":1}"#,
+        r#"{"op":"patch","id":1,"patch":{"attrs":{"k":3}}}"#,
+        r#"{"op":"begin"}"#,
+        r#"{"op":"create","node":{"type":"state","summary":"never committed","attrs":{}}}"#,
+    ]);
+    let ok = |i: usize| out[i]["ok"] == json!(true);
+    assert_eq!(out.len(), 23, "{out:#?}");
+    assert_eq!(
+        (
+            out[0]["result"]["began"].clone(),
+            out[1]["result"]["id"].clone()
+        ),
+        (json!(true), json!(1))
+    );
+    assert_eq!(
+        out[2]["result"]["total"], 1,
+        "a transaction sees its own writes"
+    );
+    assert_eq!(out[3]["result"]["rolled_back"], true);
+    assert_eq!(out[4]["result"]["total"], 0);
+    assert_eq!(out[6]["result"]["id"], 1);
+    assert!(ok(7) && out[8]["result"]["now"].as_i64().unwrap() > 0);
+    assert_eq!(out[9]["result"]["committed"], true);
+    assert_eq!(out[10]["result"]["attrs"]["k"], 2);
+    assert!(
+        !ok(12) && !ok(13) && !ok(14),
+        "after an error only rollback is accepted"
+    );
+    assert!(out[13]["error"].as_str().unwrap().contains("only rollback"));
+    assert_eq!(out[15]["result"]["rolled_back"], true);
+    assert_eq!(out[16]["result"]["nodes"], 1);
+    assert!(ok(17) && ok(18));
+    assert!(
+        !ok(19)
+            && out[19]["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be deleted")
+    );
+    assert!(ok(20), "patching an allowed key still works");
+    assert_eq!(out[21]["result"]["began"], true);
+    assert!(
+        ok(22),
+        "input ending inside a transaction rolls it back silently"
+    );
+}

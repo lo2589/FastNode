@@ -60,6 +60,25 @@ impl Engine<'_> {
             Predicate::ContainedBy { field, start, end } => {
                 return self.interval(field, IntervalOp::ContainedBy, start, end, candidate);
             }
+            Predicate::Seek {
+                index,
+                group,
+                gt,
+                gte,
+                lt,
+                lte,
+                direction,
+                limit,
+            } => {
+                return self.seek(
+                    index,
+                    group,
+                    [gt, gte, lt, lte],
+                    *direction,
+                    *limit,
+                    candidate,
+                );
+            }
             Predicate::And { args } => return self.and(args, candidate),
             Predicate::Or { args } => {
                 let mut result = NodeSet::new();

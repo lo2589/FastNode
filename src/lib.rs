@@ -8,4 +8,4 @@ pub mod types;
 pub use anyhow::{Error, Result};
 pub use import::ImportReport;
 pub use model::*;
-pub use store::{Store, Write};
+pub use store::{Store, Write, WritePolicy};

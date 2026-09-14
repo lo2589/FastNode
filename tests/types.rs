@@ -1,9 +1,9 @@
 mod common;
 
-use common::memory;
-use fastnode::types::{self, EventNode, Span, StateNode, TreeNode};
-use fastnode::{LinkOptions, NewNode};
-use serde_json::json;
+use common::{Temp, memory};
+use fastnode::types::{self, CodeNode, EventNode, RelationshipNode, Span, StateNode, TreeNode, TypeDef};
+use fastnode::{LinkOptions, NewNode, Store};
+use serde_json::{Value, json};
 
 const DAY: i64 = 1_789_228_800_000;
 const HOUR: i64 = 3_600_000;
@@ -169,5 +169,131 @@ fn state_history_splits_and_answers_as_of() {
     assert_eq!(
         StateNode::history(&mut db, person, "mood").unwrap().len(),
         1
+    );
+}
+
+#[test]
+fn code_lifts_symbol_fields_and_call_links() {
+    let mut db = memory();
+    let main_fn = CodeNode::create(
+        &mut db,
+        "main main() (src/main.rs:1)",
+        json!({"symbol":"main","file":"src/main.rs","line_start":1,"symbol_type":"function"}),
+    )
+    .unwrap();
+    let helper = CodeNode::create(
+        &mut db,
+        "helper helper() (src/lib.rs:9)",
+        json!({"symbol":"helper","file":"src/lib.rs","line_start":9,"symbol_type":"function"}),
+    )
+    .unwrap();
+    db.link(&fastnode::Link { from: main_fn, relation: "call".into(), to: helper }).unwrap();
+
+    let node = CodeNode::read(&mut db, main_fn).unwrap().unwrap();
+    assert_eq!(node.symbol.as_deref(), Some("main"));
+    assert_eq!(node.file.as_deref(), Some("src/main.rs"));
+    assert_eq!(node.line_start, Some(1));
+    assert_eq!(node.calls.iter().map(|l| l.id).collect::<Vec<_>>(), vec![helper]);
+
+    let callee = CodeNode::read(&mut db, helper).unwrap().unwrap();
+    assert_eq!(callee.called_by.iter().map(|l| l.id).collect::<Vec<_>>(), vec![main_fn]);
+
+    let view = types::view(&mut db, "code", main_fn, &LinkOptions::default())
+        .unwrap()
+        .unwrap();
+    let flat = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        (flat["type"].clone(), flat["symbol_type"].clone(), flat["calls"][0]["id"].clone()),
+        (json!("code"), json!("function"), json!(helper))
+    );
+    assert!(types::view(&mut db, "tree", main_fn, &LinkOptions::default()).is_err());
+}
+
+#[test]
+fn runtime_defined_types_view_without_recompile() {
+    let tmp = Temp::new();
+    let mut db = Store::open(&tmp.0).unwrap();
+    let def: TypeDef = serde_json::from_value(json!({
+        "kind": "service",
+        "fields": [
+            {"name": "name", "attr": "/name"},
+            {"name": "endpoints", "link": "exposes", "direction": "out", "many": true},
+            {"name": "owner", "link": "owned_by", "direction": "in"}
+        ]
+    }))
+    .unwrap();
+    types::define_type(&mut db, &def).unwrap();
+    types::define_type(&mut db, &def).unwrap(); // identical re-define is a no-op
+
+    let svc = db.create(NewNode::new("service", "网关", json!({"name":"gateway"}))).unwrap();
+    let ep = db.create(NewNode::new("endpoint", "健康检查", json!({}))).unwrap();
+    db.link(&fastnode::Link { from: svc, relation: "exposes".into(), to: ep }).unwrap();
+
+    let flat = serde_json::to_value(
+        types::view(&mut db, "service", svc, &LinkOptions::default())
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (flat["name"].clone(), flat["endpoints"][0]["id"].clone(), flat["owner"].clone()),
+        (json!("gateway"), json!(ep), Value::Null)
+    );
+
+    drop(db);
+    let mut db = Store::open(&tmp.0).unwrap();
+    assert_eq!(types::type_defs(&mut db).unwrap(), vec![def.clone()]);
+    assert!(
+        types::view(&mut db, "service", svc, &LinkOptions::default())
+            .unwrap()
+            .is_some()
+    );
+    assert!(types::view(&mut db, "nope", svc, &LinkOptions::default()).is_err());
+
+    let mut conflicting = def.clone();
+    conflicting.fields.pop();
+    assert!(types::define_type(&mut db, &conflicting).is_err());
+    for bad in [
+        json!({"kind":"x","fields":[{"name":"a","attr":"name"}]}),        // attr 缺前导 /
+        json!({"kind":"x","fields":[{"name":"a"}]}),                      // attr/link 都没有
+        json!({"kind":"x","fields":[{"name":"a","attr":"/a","link":"b"}]}), // 两个都有
+        json!({"kind":"x","fields":[{"name":"a","attr":"/a"},{"name":"a","attr":"/b"}]}), // 重名
+        json!({"kind":"tree","fields":[{"name":"a","attr":"/a"}]}),       // 内置类型不可重定义
+    ] {
+        let def: TypeDef = serde_json::from_value(bad).unwrap();
+        assert!(types::define_type(&mut db, &def).is_err(), "{def:?}");
+    }
+}
+
+#[test]
+fn relationship_lifts_endpoints_and_edge_metadata() {
+    let mut db = memory();
+    let a = CodeNode::create(&mut db, "a() (a.rs:1)", json!({"symbol":"a"})).unwrap();
+    let b = CodeNode::create(&mut db, "b() (b.rs:2)", json!({"symbol":"b"})).unwrap();
+    let edge = RelationshipNode::create(
+        &mut db,
+        "a -[call]-> b @42",
+        json!({"edge_type":"call","call_line":42,"is_conditional":true,"resolution":"exact"}),
+        a,
+        b,
+    )
+    .unwrap();
+
+    let node = RelationshipNode::read(&mut db, edge).unwrap().unwrap();
+    assert_eq!(node.from.as_ref().map(|l| l.id), Some(a));
+    assert_eq!(node.to.as_ref().map(|l| l.id), Some(b));
+    assert_eq!(node.edge_type.as_deref(), Some("call"));
+    assert_eq!(node.call_line, Some(42));
+    assert_eq!(node.is_conditional, Some(true));
+
+    let flat = serde_json::to_value(
+        types::view(&mut db, "relationship", edge, &LinkOptions::default())
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (flat["type"].clone(), flat["resolution"].clone(), flat["from"]["id"].clone()),
+        (json!("relationship"), json!("exact"), json!(a))
     );
 }

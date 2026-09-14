@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use rusqlite::Connection;
 
-pub(crate) const VERSION: u32 = 4;
+pub(crate) const VERSION: u32 = 5;
 
 // type and summary precede attrs so reading them never touches the overflow
 // pages of a large attrs document. Postings and counts hold every string and
@@ -47,14 +47,30 @@ CREATE TABLE IF NOT EXISTS links (
     PRIMARY KEY(source, relation, target)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS links_reverse ON links(target, relation, source);
+CREATE TABLE IF NOT EXISTS index_defs (
+    name TEXT PRIMARY KEY, type TEXT NOT NULL, grouping TEXT NOT NULL, ordering TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS typedefs (
+    kind TEXT PRIMARY KEY, def TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS composites (
+    name TEXT NOT NULL, grp BLOB NOT NULL, ord BLOB NOT NULL,
+    node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    PRIMARY KEY(name, grp, ord, node_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS composites_node ON composites(node_id, name, grp, ord);
+CREATE TABLE IF NOT EXISTS policies (
+    type TEXT PRIMARY KEY, can_delete INTEGER NOT NULL, can_replace INTEGER NOT NULL, patchable TEXT
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS clock (id INTEGER PRIMARY KEY CHECK(id = 1), last INTEGER NOT NULL);
 ";
 
 pub(super) fn init(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-65536; PRAGMA temp_store=MEMORY;")?;
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        version == 0 || version == VERSION,
-        "database schema v{version} is not supported (this FastNode uses v{VERSION}); import the data into a new database"
+        matches!(version, 0 | 4 | VERSION),
+        "database schema v{version} is not supported (this FastNode uses v{VERSION} and upgrades v4 in place); import the data into a new database"
     );
     conn.execute_batch(&format!(
         "BEGIN IMMEDIATE;{TABLES}PRAGMA user_version={VERSION};COMMIT;"

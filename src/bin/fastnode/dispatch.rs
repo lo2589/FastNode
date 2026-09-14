@@ -1,6 +1,6 @@
 use crate::mutation::Mutation;
 use anyhow::{Context, Result};
-use fastnode::{LinkOptions, NewNode, Query, Store, types};
+use fastnode::{LinkOptions, NewNode, Query, Store, WritePolicy, types};
 use serde_json::{Value, json};
 
 pub fn dispatch(store: &mut Store, request: Value) -> Result<Value> {
@@ -24,6 +24,42 @@ pub fn dispatch(store: &mut Store, request: Value) -> Result<Value> {
             serde_json::to_value(types::view(store, kind, id()?, &link_options(&request)?)?)?
         }
         "links" => serde_json::to_value(store.links(id()?)?)?,
+        "neighbors" => {
+            let direction = request
+                .get("direction")
+                .map(|d| serde_json::from_value(d.clone()))
+                .transpose()?;
+            let (links, more) = store.neighbors(
+                id()?,
+                text(&request, "relation")?,
+                direction.unwrap_or_default(),
+                &link_options(&request)?,
+            )?;
+            json!({"links": links, "more": more})
+        }
+        "define_index" => {
+            let grouping: Vec<String> = serde_json::from_value(field("grouping")?.clone())?;
+            let grouping: Vec<&str> = grouping.iter().map(String::as_str).collect();
+            store.define_index(
+                text(&request, "name")?,
+                text(&request, "type")?,
+                &grouping,
+                text(&request, "ordering")?,
+            )?;
+            json!({"defined": true})
+        }
+        "define_type" => {
+            let def: types::TypeDef = serde_json::from_value(field("def")?.clone())?;
+            types::define_type(store, &def)?;
+            json!({"defined": def.kind})
+        }
+        "typedefs" => serde_json::to_value(types::type_defs(store)?)?,
+        "set_policy" => {
+            let policy: WritePolicy = serde_json::from_value(field("policy")?.clone())?;
+            store.set_policy(text(&request, "type")?, &policy)?;
+            json!({"set": true})
+        }
+        "now" => json!({"now": store.write(|w| w.now())?}),
         "stats" => serde_json::to_value(store.stats()?)?,
         "query" => {
             let query: Query = serde_json::from_value(field("query")?.clone())?;
@@ -50,7 +86,14 @@ pub fn dispatch(store: &mut Store, request: Value) -> Result<Value> {
     })
 }
 
-fn link_options(request: &Value) -> Result<LinkOptions> {
+pub fn text<'a>(request: &'a Value, name: &str) -> Result<&'a str> {
+    request
+        .get(name)
+        .and_then(Value::as_str)
+        .with_context(|| format!("{name} must be a string"))
+}
+
+pub fn link_options(request: &Value) -> Result<LinkOptions> {
     let mut options = LinkOptions::default();
     if let Some(mode) = request.get("links") {
         options.mode = serde_json::from_value(mode.clone())?;

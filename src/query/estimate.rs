@@ -53,6 +53,9 @@ impl Engine<'_> {
                     .query_row(params![target, relation], |r| r.get::<_, i64>(0))?
                     as u64
             }
+            Predicate::Seek {
+                limit: Some(limit), ..
+            } => *limit as u64,
             _ => self.count("", LIVE)?,
         })
     }
