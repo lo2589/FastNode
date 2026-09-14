@@ -8,6 +8,24 @@ FastNode 是一个 Rust 嵌入式库，也提供命令行和常驻 JSON 接口�
 - 演示输出：[reports/DEMO.md](reports/DEMO.md)
 - 实现计划：[PLAN.md](PLAN.md)
 
+## 安装
+
+**前置要求：**
+
+- Rust 工具链（1.98+，用了 edition 2024）：`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- SQLite 无需单独安装——rusqlite 以 bundled 模式编译进二进制（见 Cargo.toml）。
+- Python 3：仅当需要用 `examples/anchors_to_fastnode.py` 导入 codedendrite 数据时。
+
+**从源码构建：**
+
+```bash
+git clone <仓库地址> && cd Node
+cargo build --release --locked      # 产物：target/release/fastnode
+cargo test --locked                 # 验证：52 项测试应全部通过
+```
+
+**作为 Rust 库使用：** 见下文「Rust 接入」一节，以 path 或 git 依赖引入即可。
+
 ## 快速上手
 
 ```bash

@@ -3,5 +3,17 @@
 *.db
 *.db-wal
 *.db-shm
-
 __pycache__/
+
+# 文档只留本地，除 README 外不入库
+docs/*
+doc/*
+reports/*
+*.md
+!README.md
+!**/README.md
+
+# 工具产物
+.codedendrite/
+.code_genome_db.json*
+.code_hash_db.json*
