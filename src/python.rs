@@ -141,6 +141,45 @@ impl PyStore {
         let stats = self.inner.lock().unwrap().stats().map_err(err)?;
         ser_to_py(py, &stats)
     }
+
+    /// Reads a Node through a derived type (built-in or define_type'd); None when missing.
+    #[pyo3(signature = (kind, id, links=None, link_limit=None))]
+    fn view(&self, py: Python<'_>, kind: &str, id: u32, links: Option<&str>, link_limit: Option<usize>) -> PyResult<Option<Py<PyAny>>> {
+        let options = link_options(links, link_limit)?;
+        let mut guard = self.inner.lock().unwrap();
+        crate::types::view(&mut guard, kind, id, &options)
+            .map_err(err)?
+            .map(|v| ser_to_py(py, &v))
+            .transpose()
+    }
+
+    /// Stores a runtime derived-type definition, e.g.
+    /// {"kind":"brief","fields":[{"name":"symbol","attr":"/symbol"}]}.
+    fn define_type(&self, def: &Bound<'_, PyAny>) -> PyResult<String> {
+        let def: crate::types::TypeDef = depythonize(def).map_err(|e| err(e.into()))?;
+        let kind = def.kind.clone();
+        crate::types::define_type(&mut self.inner.lock().unwrap(), &def).map_err(err)?;
+        Ok(kind)
+    }
+
+    /// Every runtime-defined derived type.
+    fn typedefs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let defs = crate::types::type_defs(&mut self.inner.lock().unwrap()).map_err(err)?;
+        ser_to_py(py, &defs)
+    }
+
+    /// Declares a composite index: (grouping paths..., ordering path) over one type.
+    fn define_index(&self, name: &str, kind: &str, grouping: Vec<String>, ordering: &str) -> PyResult<()> {
+        let grouping: Vec<&str> = grouping.iter().map(String::as_str).collect();
+        self.inner.lock().unwrap().define_index(name, kind, &grouping, ordering).map_err(err)
+    }
+
+    /// Sets the write policy for one type, e.g.
+    /// {"delete": false, "replace": false, "patch": ["/recorded/end"]}.
+    fn set_policy(&self, kind: &str, policy: &Bound<'_, PyAny>) -> PyResult<()> {
+        let policy: crate::WritePolicy = depythonize(policy).map_err(|e| err(e.into()))?;
+        self.inner.lock().unwrap().set_policy(kind, &policy).map_err(err)
+    }
 }
 
 #[pymodule]

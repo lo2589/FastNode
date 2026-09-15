@@ -463,7 +463,17 @@ db.find("小红")                               # 任意路径含这个值的 id
 db.get(a, links="summary")                    # 带引用读出
 ```
 
-方法与核心 API 一一对应：`create` `create_many` `get` `query` `find` `patch` `delete` `link` `unlink` `import` `stats`。参数和返回值都是原生 dict / list，查询协议与命令行相同；进程内直接调 Rust 库，没有子进程开销。
+方法与核心 API 一一对应：`create` `create_many` `get` `query` `find` `patch` `delete` `link` `unlink` `import` `stats`，另有派生类型与索引管理：`view` `define_type` `typedefs` `define_index` `set_policy`。参数和返回值都是原生 dict / list，查询协议与命令行相同；进程内直接调 Rust 库，没有子进程开销。
+
+```python
+db.define_type({"kind": "brief", "fields": [
+    {"name": "symbol", "attr": "/symbol"},
+    {"name": "callees", "link": "call", "direction": "out", "many": True}]})
+db.view("brief", node_id)                       # 运行时派生类型，随库持久化
+db.view("code", node_id)                        # 内置派生类型同样可用
+db.define_index("timeline", "state", ["/timeline", "/recorded/end"], "/valid/start")
+db.set_policy("state", {"delete": False, "replace": False, "patch": ["/recorded/end"]})
+```
 
 ## 存储
 
